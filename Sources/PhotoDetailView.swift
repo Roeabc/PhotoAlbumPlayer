@@ -10,8 +10,9 @@ struct PhotoDetailView: View {
     @State private var isPlaying = false
     @State private var speed: TimeInterval = 0.5
     @State private var timer: Timer? = nil
-    @State private var showControls = true          // 控制栏是否显示
-    @State private var dragOffset: CGFloat = 0      // 手势拖动偏移量（用于动画）
+    @State private var showControls = true          // 控制栏及导航栏是否显示
+    @State private var dragOffset: CGFloat = 0      // 拖动偏移量
+    @State private var isShuffle = false            // 是否随机播放
     
     init(assets: [PHAsset], initialIndex: Int) {
         self.assets = assets
@@ -29,7 +30,7 @@ struct PhotoDetailView: View {
                         .scaledToFit()
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
-                        .offset(x: dragOffset)          // 拖动偏移
+                        .offset(x: dragOffset)          // 跟随手指移动
                         .gesture(
                             DragGesture()
                                 .onChanged { value in
@@ -44,14 +45,14 @@ struct PhotoDetailView: View {
                                         // 向右滑动，上一张
                                         goToPrevious()
                                     }
-                                    // 恢复偏移
+                                    // 释放后弹回原位置
                                     withAnimation(.easeOut(duration: 0.2)) {
                                         dragOffset = 0
                                     }
                                 }
                         )
                         .onTapGesture {
-                            // 单击屏幕切换控制栏显示/隐藏
+                            // 单击切换所有 UI 的显示/隐藏
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showControls.toggle()
                             }
@@ -62,18 +63,32 @@ struct PhotoDetailView: View {
                 }
             }
             
-            // 底部控制栏（可隐藏）
+            // 底部控制栏（可隐藏，同时导航栏也会跟着隐藏）
             if showControls {
                 VStack {
                     Spacer()
-                    HStack {
+                    HStack(spacing: 12) {
+                        // 随机播放按钮
+                        Button(action: {
+                            isShuffle.toggle()
+                            // 如果正在播放，重置定时器以立即应用新模式
+                            if isPlaying {
+                                resetAutoPlay()
+                            }
+                        }) {
+                            Image(systemName: "shuffle")
+                                .font(.title3)
+                                .symbolVariant(isShuffle ? .fill : .none)
+                                .foregroundColor(isShuffle ? .yellow : .white)
+                        }
+                        
                         // 速度选择
                         Picker("速度", selection: $speed) {
                             Text("0.5秒").tag(0.5)
                             Text("1秒").tag(1.0)
                         }
                         .pickerStyle(.segmented)
-                        .frame(width: 150)
+                        .frame(width: 130)
                         
                         Spacer()
                         
@@ -94,14 +109,15 @@ struct PhotoDetailView: View {
                         // 图片序号
                         Text("\(currentIndex + 1) / \(assets.count)")
                             .monospacedDigit()
+                            .foregroundColor(.white)
                     }
                     .padding(.horizontal)
                     .padding(.bottom, 20)
-                    .background(.ultraThinMaterial)   // 毛玻璃背景，便于看清
+                    .background(.ultraThinMaterial)   // 毛玻璃背景
                 }
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarHidden(!showControls)   // 隐藏控制栏时同时隐藏导航栏（返回按钮消失）
         .onAppear {
             loadCurrentImage()
         }
@@ -111,13 +127,17 @@ struct PhotoDetailView: View {
         .onChange(of: currentIndex) { _ in
             loadCurrentImage()
         }
-        .onChange(of: speed) { newSpeed in
+        .onChange(of: speed) { _ in
             if isPlaying {
-                stopAutoPlay()
-                startAutoPlay()
+                resetAutoPlay()
             }
         }
-        .statusBar(hidden: !showControls)   // 隐藏控制栏时也隐藏状态栏，更沉浸
+        .onChange(of: isShuffle) { _ in
+            if isPlaying {
+                resetAutoPlay()
+            }
+        }
+        .statusBar(hidden: !showControls)     // 状态栏也一起隐藏
     }
     
     // MARK: - 图片加载
@@ -141,7 +161,7 @@ struct PhotoDetailView: View {
         }
     }
     
-    // MARK: - 翻页逻辑（手动 + 自动共用）
+    // MARK: - 手动翻页（始终顺序上下翻）
     private func goToNext() {
         guard !assets.isEmpty else { return }
         currentIndex = (currentIndex + 1) % assets.count
@@ -155,20 +175,18 @@ struct PhotoDetailView: View {
     }
     
     private func resetAutoPlayIfNeeded() {
-        // 如果正在自动播放，重置定时器，让间隔从头计时
         if isPlaying {
-            stopAutoPlay()
-            startAutoPlay()
+            resetAutoPlay()
         }
     }
     
-    // MARK: - 自动播放控制
+    // MARK: - 自动播放逻辑
     private func startAutoPlay() {
         guard !assets.isEmpty else { return }
         isPlaying = true
         timer = Timer.scheduledTimer(withTimeInterval: speed, repeats: true) { _ in
             DispatchQueue.main.async {
-                self.currentIndex = (self.currentIndex + 1) % self.assets.count
+                self.advanceAutoPlay()
             }
         }
     }
@@ -177,5 +195,30 @@ struct PhotoDetailView: View {
         isPlaying = false
         timer?.invalidate()
         timer = nil
+    }
+    
+    private func resetAutoPlay() {
+        // 停止再按当前速度、模式重新开始
+        stopAutoPlay()
+        startAutoPlay()
+    }
+    
+    private func advanceAutoPlay() {
+        guard !assets.isEmpty else { return }
+        if isShuffle {
+            // 随机模式：随机跳到一张图，且不与当前相同（若图片数量>1）
+            let count = assets.count
+            if count > 1 {
+                var randomIndex = Int.random(in: 0..<count)
+                while randomIndex == currentIndex {
+                    randomIndex = Int.random(in: 0..<count)
+                }
+                currentIndex = randomIndex
+            }
+            // 只有1张图时不做改变
+        } else {
+            // 顺序模式
+            currentIndex = (currentIndex + 1) % assets.count
+        }
     }
 }
