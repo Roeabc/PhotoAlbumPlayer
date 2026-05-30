@@ -7,8 +7,8 @@ struct PhotoDetailView: View {
     
     @State private var currentIndex: Int
     @State private var currentImage: UIImage? = nil
-    @State private var nextImage: UIImage? = nil       // 预加载的下一张图（用于滑动动画）
-    @State private var prevImage: UIImage? = nil       // 预加载的上一张图
+    @State private var nextImage: UIImage? = nil
+    @State private var prevImage: UIImage? = nil
     
     @State private var isPlaying = false
     @State private var speed: TimeInterval = 0.5
@@ -16,11 +16,9 @@ struct PhotoDetailView: View {
     @State private var showControls = true
     @State private var isShuffle = false
     
-    // 手动滑动相关状态
     @State private var dragOffset: CGFloat = 0
-    @State private var isAnimatingSlide = false        // 是否正在执行滑动动画（此时禁用手势）
+    @State private var isAnimatingSlide = false
     
-    // 屏幕宽度
     @State private var screenWidth: CGFloat = UIScreen.main.bounds.width
     
     init(assets: [PHAsset], initialIndex: Int) {
@@ -31,13 +29,11 @@ struct PhotoDetailView: View {
     
     var body: some View {
         ZStack {
-            // 背景色
             Color.black.ignoresSafeArea()
             
-            // 图片展示区域
             GeometryReader { geo in
                 ZStack {
-                    // 上一张图片（当向右滑动时出现）
+                    // 上一张图
                     if let prevImage = prevImage, dragOffset > 0 {
                         Image(uiImage: prevImage)
                             .resizable()
@@ -47,7 +43,7 @@ struct PhotoDetailView: View {
                             .offset(x: dragOffset - geo.size.width)
                     }
                     
-                    // 当前图片
+                    // 当前图
                     if let currentImage = currentImage {
                         Image(uiImage: currentImage)
                             .resizable()
@@ -60,7 +56,7 @@ struct PhotoDetailView: View {
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
                     
-                    // 下一张图片（当向左滑动时出现）
+                    // 下一张图
                     if let nextImage = nextImage, dragOffset < 0 {
                         Image(uiImage: nextImage)
                             .resizable()
@@ -83,13 +79,10 @@ struct PhotoDetailView: View {
                             let velocity = value.predictedEndTranslation.width - value.translation.width
                             
                             if dragOffset < -threshold || velocity < -100 {
-                                // 向左滑动 → 下一张
                                 slideToNext()
                             } else if dragOffset > threshold || velocity > 100 {
-                                // 向右滑动 → 上一张
                                 slideToPrevious()
                             } else {
-                                // 弹回原位
                                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                     dragOffset = 0
                                 }
@@ -103,7 +96,6 @@ struct PhotoDetailView: View {
                 }
             }
             
-            // 底部控制栏
             if showControls {
                 VStack {
                     Spacer()
@@ -183,11 +175,10 @@ struct PhotoDetailView: View {
                     if isCurrent {
                         self.currentImage = image
                     }
-                    // 更新邻居缓存
-                    if index == self.currentIndex + 1 || (self.currentIndex == self.assets.count - 1 && index == 0) {
+                    if index == ((self.currentIndex + 1) % self.assets.count) {
                         self.nextImage = image
                     }
-                    if index == self.currentIndex - 1 || (self.currentIndex == 0 && index == self.assets.count - 1) {
+                    if index == ((self.currentIndex - 1 + self.assets.count) % self.assets.count) {
                         self.prevImage = image
                     }
                 }
@@ -204,19 +195,25 @@ struct PhotoDetailView: View {
         loadImage(at: prevIdx, isCurrent: false)
     }
     
-    // MARK: - 手动滑动动画
+    // MARK: - 手动滑动动画（修复闪烁版）
     private func slideToNext() {
         guard !isAnimatingSlide else { return }
         isAnimatingSlide = true
         
-        // 动画：当前图滑出左侧，新图从右侧滑入
+        // 动画：当前图滑出左侧，下一张图从右侧滑入
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
             dragOffset = -screenWidth
         }
         
-        // 动画完成后更新索引
+        // 动画完成后立刻交换图片，消除闪烁
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            // 直接用预加载的下一张替换当前图
+            if let next = nextImage {
+                currentImage = next
+            }
+            // 更新索引
             currentIndex = (currentIndex + 1) % assets.count
+            // 重置偏移
             dragOffset = 0
             isAnimatingSlide = false
             resetAutoPlayIfNeeded()
@@ -232,6 +229,10 @@ struct PhotoDetailView: View {
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            // 直接用预加载的上一张替换当前图
+            if let prev = prevImage {
+                currentImage = prev
+            }
             currentIndex = (currentIndex - 1 + assets.count) % assets.count
             dragOffset = 0
             isAnimatingSlide = false
@@ -239,7 +240,7 @@ struct PhotoDetailView: View {
         }
     }
     
-    // MARK: - 自动播放（无任何滑动效果）
+    // MARK: - 自动播放（无滑动效果）
     private func startAutoPlay() {
         guard !assets.isEmpty else { return }
         isPlaying = true
@@ -279,6 +280,5 @@ struct PhotoDetailView: View {
         } else {
             currentIndex = (currentIndex + 1) % assets.count
         }
-        // 自动播放时，直接修改 currentIndex，不会触发任何滑动动画
     }
 }
