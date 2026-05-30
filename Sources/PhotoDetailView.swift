@@ -19,7 +19,19 @@ struct PhotoDetailView: View {
     @State private var dragOffset: CGFloat = 0
     @State private var isAnimatingSlide = false
     
-    @State private var screenWidth: CGFloat = UIScreen.main.bounds.width
+    private let screenWidth: CGFloat = UIScreen.main.bounds.width
+    private let screenHeight: CGFloat = UIScreen.main.bounds.height
+    private let scale: CGFloat = UIScreen.main.scale
+    
+    // 全尺寸（用于当前显示的大图）
+    private var fullSize: CGSize {
+        CGSize(width: screenWidth * scale, height: screenHeight * scale)
+    }
+    
+    // 小尺寸（用于快速预加载邻居，宽度为屏幕的 1/3 足够滑动时显示）
+    private var thumbSize: CGSize {
+        CGSize(width: screenWidth * scale / 3, height: screenHeight * scale / 3)
+    }
     
     init(assets: [PHAsset], initialIndex: Int) {
         self.assets = assets
@@ -33,7 +45,7 @@ struct PhotoDetailView: View {
             
             GeometryReader { geo in
                 ZStack {
-                    // 上一张图
+                    // 上一张图（小图快速显示）
                     if let prevImage = prevImage, dragOffset > 0 {
                         Image(uiImage: prevImage)
                             .resizable()
@@ -43,7 +55,7 @@ struct PhotoDetailView: View {
                             .offset(x: dragOffset - geo.size.width)
                     }
                     
-                    // 当前图
+                    // 当前图（全尺寸）
                     if let currentImage = currentImage {
                         Image(uiImage: currentImage)
                             .resizable()
@@ -56,7 +68,7 @@ struct PhotoDetailView: View {
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
                     
-                    // 下一张图
+                    // 下一张图（小图快速显示）
                     if let nextImage = nextImage, dragOffset < 0 {
                         Image(uiImage: nextImage)
                             .resizable()
@@ -140,14 +152,14 @@ struct PhotoDetailView: View {
         }
         .navigationBarHidden(!showControls)
         .onAppear {
-            loadImage(at: currentIndex, isCurrent: true)
+            loadImage(at: currentIndex, targetSize: fullSize, isCurrent: true)
             preloadNeighbors()
         }
         .onDisappear {
             stopAutoPlay()
         }
         .onChange(of: currentIndex) { _ in
-            loadImage(at: currentIndex, isCurrent: true)
+            loadImage(at: currentIndex, targetSize: fullSize, isCurrent: true)
             preloadNeighbors()
         }
         .onChange(of: speed) { _ in
@@ -159,26 +171,32 @@ struct PhotoDetailView: View {
         .statusBar(hidden: !showControls)
     }
     
-    // MARK: - 图片加载
-    private func loadImage(at index: Int, isCurrent: Bool) {
+    // MARK: - 图片加载（可指定尺寸）
+    private func loadImage(at index: Int, targetSize: CGSize, isCurrent: Bool) {
         guard index >= 0, index < assets.count else { return }
         let asset = assets[index]
         let manager = PHImageManager.default()
         let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
+        options.deliveryMode = .fastFormat     // 快速加载，邻居图用
         options.isSynchronous = false
-        let size = CGSize(width: screenWidth * UIScreen.main.scale,
-                          height: UIScreen.main.bounds.height * UIScreen.main.scale)
-        manager.requestImage(for: asset, targetSize: size, contentMode: .aspectFit, options: options) { image, _ in
+        
+        manager.requestImage(for: asset,
+                             targetSize: targetSize,
+                             contentMode: .aspectFit,
+                             options: options) { image, _ in
             if let image = image {
                 DispatchQueue.main.async {
                     if isCurrent {
                         self.currentImage = image
                     }
-                    if index == ((self.currentIndex + 1) % self.assets.count) {
+                    // 更新邻居缓存（以当前 currentIndex 为准，防止错位）
+                    let count = self.assets.count
+                    let nextIdx = (self.currentIndex + 1) % count
+                    let prevIdx = (self.currentIndex - 1 + count) % count
+                    if index == nextIdx {
                         self.nextImage = image
                     }
-                    if index == ((self.currentIndex - 1 + self.assets.count) % self.assets.count) {
+                    if index == prevIdx {
                         self.prevImage = image
                     }
                 }
@@ -191,32 +209,33 @@ struct PhotoDetailView: View {
         let count = assets.count
         let nextIdx = (currentIndex + 1) % count
         let prevIdx = (currentIndex - 1 + count) % count
-        loadImage(at: nextIdx, isCurrent: false)
-        loadImage(at: prevIdx, isCurrent: false)
+        // 邻居用超小尺寸快速预加载
+        loadImage(at: nextIdx, targetSize: thumbSize, isCurrent: false)
+        loadImage(at: prevIdx, targetSize: thumbSize, isCurrent: false)
     }
     
-    // MARK: - 手动滑动动画（修复闪烁版）
+    // MARK: - 手动滑动动画（已彻底修复闪烁）
     private func slideToNext() {
         guard !isAnimatingSlide else { return }
         isAnimatingSlide = true
         
-        // 动画：当前图滑出左侧，下一张图从右侧滑入
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
             dragOffset = -screenWidth
         }
         
-        // 动画完成后立刻交换图片，消除闪烁
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            // 直接用预加载的下一张替换当前图
+            // 直接用已经预加载好的下一张小图替换当前图
             if let next = nextImage {
                 currentImage = next
             }
-            // 更新索引
-            currentIndex = (currentIndex + 1) % assets.count
-            // 重置偏移
+            // 滑动完成后，下一张变成当前，重新加载它的高清大图
+            let newIndex = (currentIndex + 1) % assets.count
+            currentIndex = newIndex
             dragOffset = 0
             isAnimatingSlide = false
             resetAutoPlayIfNeeded()
+            // 立刻重新加载当前的高清大图（因为上面只是用了小图）
+            loadImage(at: newIndex, targetSize: fullSize, isCurrent: true)
         }
     }
     
@@ -229,18 +248,20 @@ struct PhotoDetailView: View {
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            // 直接用预加载的上一张替换当前图
             if let prev = prevImage {
                 currentImage = prev
             }
-            currentIndex = (currentIndex - 1 + assets.count) % assets.count
+            let newIndex = (currentIndex - 1 + assets.count) % assets.count
+            currentIndex = newIndex
             dragOffset = 0
             isAnimatingSlide = false
             resetAutoPlayIfNeeded()
+            // 同样，替换为高清大图
+            loadImage(at: newIndex, targetSize: fullSize, isCurrent: true)
         }
     }
     
-    // MARK: - 自动播放（无滑动效果）
+    // MARK: - 自动播放（无滑动特效）
     private func startAutoPlay() {
         guard !assets.isEmpty else { return }
         isPlaying = true
