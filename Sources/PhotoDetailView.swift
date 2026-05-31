@@ -7,8 +7,9 @@ struct PhotoDetailView: View {
     
     @State private var currentIndex: Int
     @State private var currentImage: UIImage? = nil
-    @State private var nextImage: UIImage? = nil
-    @State private var prevImage: UIImage? = nil
+    
+    // 预加载缓存：key = asset.localIdentifier
+    @State private var preloadedImages: [String: UIImage] = [:]
     
     @State private var isPlaying = false
     @State private var speed: TimeInterval = 0.5
@@ -16,19 +17,21 @@ struct PhotoDetailView: View {
     @State private var showControls = true
     @State private var isShuffle = false
     
+    // 随机播放的未来索引队列（真随机，预加载3张）
+    @State private var upcomingRandomIndices: [Int] = []
+    
     private let screenWidth: CGFloat = UIScreen.main.bounds.width
     private let screenHeight: CGFloat = UIScreen.main.bounds.height
     private let scale: CGFloat = UIScreen.main.scale
     
-    // 当前显示用全尺寸（屏幕点对点，保证清晰）
+    // 统一使用高清尺寸进行预加载
     private var fullSize: CGSize {
         CGSize(width: screenWidth * scale, height: screenHeight * scale)
     }
     
-    // 邻居预加载用小尺寸（速度快，不影响清晰度）
-    private var thumbSize: CGSize {
-        CGSize(width: screenWidth * scale / 3, height: screenHeight * scale / 3)
-    }
+    // 预加载数量配置：前后各 3 张高清原图
+    private let forwardPreloadCount = 3
+    private let backwardPreloadCount = 3
     
     init(assets: [PHAsset], initialIndex: Int) {
         self.assets = assets
@@ -117,15 +120,32 @@ struct PhotoDetailView: View {
         }
         .navigationBarHidden(!showControls)
         .onAppear {
-            loadImage(at: currentIndex, targetSize: fullSize, isCurrent: true)
-            preloadNeighbors()
+            loadAndCache(asset: assets[currentIndex]) { image in
+                if let image = image {
+                    self.currentImage = image
+                }
+            }
+            preloadAroundCurrent()
         }
         .onDisappear {
             stopAutoPlay()
         }
         .onChange(of: currentIndex) { _ in
-            loadImage(at: currentIndex, targetSize: fullSize, isCurrent: true)
-            preloadNeighbors()
+            let asset = assets[currentIndex]
+            if let cached = preloadedImages[asset.localIdentifier] {
+                currentImage = cached
+            } else {
+                loadAndCache(asset: asset) { image in
+                    if let image = image {
+                        self.currentImage = image
+                    }
+                }
+            }
+            preloadAroundCurrent()
+            // 如果是随机模式，确保队列充足
+            if isShuffle {
+                ensureRandomQueue()
+            }
         }
         .onChange(of: speed) { _ in
             if isPlaying { resetAutoPlay() }
@@ -136,58 +156,81 @@ struct PhotoDetailView: View {
         .statusBar(hidden: !showControls)
     }
     
-    // MARK: - 图片加载（当前图高清，邻居图快速）
-    private func loadImage(at index: Int, targetSize: CGSize, isCurrent: Bool) {
-        guard index >= 0, index < assets.count else { return }
-        let asset = assets[index]
+    // MARK: - 图片加载与缓存
+    private func loadAndCache(asset: PHAsset, completion: @escaping (UIImage?) -> Void) {
         let manager = PHImageManager.default()
         let options = PHImageRequestOptions()
-        
-        // 当前显示的大图使用高质量模式，保证清晰
-        if isCurrent {
-            options.deliveryMode = .highQualityFormat
-            options.resizeMode = .exact
-        } else {
-            // 预加载邻居图使用快速模式
-            options.deliveryMode = .fastFormat
-        }
-        
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .exact
         options.isSynchronous = false
         
         manager.requestImage(for: asset,
-                             targetSize: targetSize,
+                             targetSize: fullSize,
                              contentMode: .aspectFit,
                              options: options) { image, _ in
             if let image = image {
                 DispatchQueue.main.async {
-                    if isCurrent {
-                        self.currentImage = image
-                    }
-                    // 更新邻居缓存
-                    let count = self.assets.count
-                    let nextIdx = (self.currentIndex + 1) % count
-                    let prevIdx = (self.currentIndex - 1 + count) % count
-                    if index == nextIdx {
-                        self.nextImage = image
-                    }
-                    if index == prevIdx {
-                        self.prevImage = image
-                    }
+                    self.preloadedImages[asset.localIdentifier] = image
+                    completion(image)
                 }
+            } else {
+                completion(nil)
             }
         }
     }
     
-    private func preloadNeighbors() {
+    private func preloadAroundCurrent() {
         guard !assets.isEmpty else { return }
         let count = assets.count
-        let nextIdx = (currentIndex + 1) % count
-        let prevIdx = (currentIndex - 1 + count) % count
-        loadImage(at: nextIdx, targetSize: thumbSize, isCurrent: false)
-        loadImage(at: prevIdx, targetSize: thumbSize, isCurrent: false)
+        
+        // 向前预加载（未来方向）
+        for offset in 1...forwardPreloadCount {
+            let nextIdx = (currentIndex + offset) % count
+            let asset = assets[nextIdx]
+            if preloadedImages[asset.localIdentifier] == nil {
+                loadAndCache(asset: asset) { _ in }
+            }
+        }
+        
+        // 向后预加载（历史方向）
+        for offset in 1...backwardPreloadCount {
+            let prevIdx = (currentIndex - offset + count) % count
+            let asset = assets[prevIdx]
+            if preloadedImages[asset.localIdentifier] == nil {
+                loadAndCache(asset: asset) { _ in }
+            }
+        }
     }
     
-    // MARK: - 手动翻页（无动画，直接切换）
+    // MARK: - 随机队列管理
+    private func ensureRandomQueue() {
+        guard !assets.isEmpty, isShuffle else { return }
+        let count = assets.count
+        
+        // 如果相册只有1张图，随机无意义
+        guard count > 1 else {
+            upcomingRandomIndices = []
+            return
+        }
+        
+        // 补充队列至3个
+        while upcomingRandomIndices.count < 3 {
+            var rand = Int.random(in: 0..<count)
+            // 避免与当前索引及队列中已有索引重复
+            let forbidden = [currentIndex] + upcomingRandomIndices
+            while forbidden.contains(rand) {
+                rand = Int.random(in: 0..<count)
+            }
+            upcomingRandomIndices.append(rand)
+            // 预加载这个随机索引的高清图
+            let asset = assets[rand]
+            if preloadedImages[asset.localIdentifier] == nil {
+                loadAndCache(asset: asset) { _ in }
+            }
+        }
+    }
+    
+    // MARK: - 手动翻页
     private func goToNext() {
         guard !assets.isEmpty else { return }
         currentIndex = (currentIndex + 1) % assets.count
@@ -200,10 +243,17 @@ struct PhotoDetailView: View {
         resetAutoPlayIfNeeded()
     }
     
-    // MARK: - 自动播放（无特效）
+    // MARK: - 自动播放（高清无卡顿）
     private func startAutoPlay() {
         guard !assets.isEmpty else { return }
         isPlaying = true
+        
+        // 随机模式下清空旧队列，重新生成真随机序列
+        if isShuffle {
+            upcomingRandomIndices.removeAll()
+            ensureRandomQueue()
+        }
+        
         timer = Timer.scheduledTimer(withTimeInterval: speed, repeats: true) { _ in
             DispatchQueue.main.async {
                 advanceAutoPlay()
@@ -228,17 +278,45 @@ struct PhotoDetailView: View {
     
     private func advanceAutoPlay() {
         guard !assets.isEmpty else { return }
+        let count = assets.count
+        
         if isShuffle {
-            let count = assets.count
-            if count > 1 {
-                var randomIndex = Int.random(in: 0..<count)
-                while randomIndex == currentIndex {
-                    randomIndex = Int.random(in: 0..<count)
-                }
-                currentIndex = randomIndex
+            // 确保队列至少有1个准备好的索引
+            if upcomingRandomIndices.isEmpty {
+                ensureRandomQueue()
             }
+            
+            guard !upcomingRandomIndices.isEmpty else {
+                // 极端情况：队列仍为空（比如只有1张图），直接跳过
+                return
+            }
+            
+            // 取出队列第一个随机索引
+            let nextRandomIndex = upcomingRandomIndices.removeFirst()
+            let nextAsset = assets[nextRandomIndex]
+            
+            if let cachedImage = preloadedImages[nextAsset.localIdentifier] {
+                // 直接显示预加载好的高清图
+                currentImage = cachedImage
+                currentIndex = nextRandomIndex
+            } else {
+                // 万一缓存没有，降级处理（概率极低）
+                currentIndex = nextRandomIndex
+            }
+            
+            // 补充队列，并预加载新的随机高清图
+            ensureRandomQueue()
+            
         } else {
-            currentIndex = (currentIndex + 1) % assets.count
+            // 顺序模式：直接取下一张
+            let nextIdx = (currentIndex + 1) % count
+            let nextAsset = assets[nextIdx]
+            if let cachedNext = preloadedImages[nextAsset.localIdentifier] {
+                currentImage = cachedNext
+                currentIndex = nextIdx
+            } else {
+                currentIndex = nextIdx
+            }
         }
     }
 }
