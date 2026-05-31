@@ -7,8 +7,8 @@ struct PhotoDetailView: View {
     
     @State private var currentIndex: Int
     @State private var currentImage: UIImage? = nil
-    @State private var nextImage: UIImage? = nil
-    @State private var prevImage: UIImage? = nil
+    @State private var nextImage: UIImage? = nil       // 预加载的下一张（用于快速显示）
+    @State private var prevImage: UIImage? = nil       // 预加载的上一张
     
     @State private var isPlaying = false
     @State private var speed: TimeInterval = 0.5
@@ -16,19 +16,19 @@ struct PhotoDetailView: View {
     @State private var showControls = true
     @State private var isShuffle = false
     
-    @State private var dragOffset: CGFloat = 0
-    @State private var isAnimatingSlide = false
+    // 手动滑动手势相关（仅用于判断方向，无动画）
+    @State private var dragStartLocation: CGFloat = 0
     
     private let screenWidth: CGFloat = UIScreen.main.bounds.width
     private let screenHeight: CGFloat = UIScreen.main.bounds.height
     private let scale: CGFloat = UIScreen.main.scale
     
-    // 全尺寸（用于当前显示的大图）
+    // 当前显示用全尺寸
     private var fullSize: CGSize {
         CGSize(width: screenWidth * scale, height: screenHeight * scale)
     }
     
-    // 小尺寸（用于快速预加载邻居，宽度为屏幕的 1/3 足够滑动时显示）
+    // 邻居预加载用小尺寸
     private var thumbSize: CGSize {
         CGSize(width: screenWidth * scale / 3, height: screenHeight * scale / 3)
     }
@@ -44,70 +44,45 @@ struct PhotoDetailView: View {
             Color.black.ignoresSafeArea()
             
             GeometryReader { geo in
-                ZStack {
-                    // 上一张图（小图快速显示）
-                    if let prevImage = prevImage, dragOffset > 0 {
-                        Image(uiImage: prevImage)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipped()
-                            .offset(x: dragOffset - geo.size.width)
-                    }
-                    
-                    // 当前图（全尺寸）
-                    if let currentImage = currentImage {
-                        Image(uiImage: currentImage)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipped()
-                            .offset(x: dragOffset)
-                    } else {
-                        ProgressView()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                    }
-                    
-                    // 下一张图（小图快速显示）
-                    if let nextImage = nextImage, dragOffset < 0 {
-                        Image(uiImage: nextImage)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipped()
-                            .offset(x: dragOffset + geo.size.width)
-                    }
+                // 只显示当前图片，不再有多图叠加
+                if let currentImage = currentImage {
+                    Image(uiImage: currentImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                } else {
+                    ProgressView()
+                        .frame(width: geo.size.width, height: geo.size.height)
                 }
-                .frame(width: geo.size.width, height: geo.size.height)
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in
-                            guard !isAnimatingSlide else { return }
-                            dragOffset = value.translation.width
-                        }
-                        .onEnded { value in
-                            guard !isAnimatingSlide else { return }
-                            let threshold: CGFloat = 80
-                            let velocity = value.predictedEndTranslation.width - value.translation.width
-                            
-                            if dragOffset < -threshold || velocity < -100 {
-                                slideToNext()
-                            } else if dragOffset > threshold || velocity > 100 {
-                                slideToPrevious()
-                            } else {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    dragOffset = 0
-                                }
-                            }
-                        }
-                )
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showControls.toggle()
+            }
+            .contentShape(Rectangle())   // 确保手势区域覆盖整个图片
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        // 空实现，不跟随移动，只记录起点（可选）
                     }
+                    .onEnded { value in
+                        let threshold: CGFloat = 80
+                        let velocity = value.predictedEndTranslation.width - value.translation.width
+                        
+                        if value.translation.width < -threshold || velocity < -100 {
+                            // 向左滑动：下一张
+                            goToNext()
+                        } else if value.translation.width > threshold || velocity > 100 {
+                            // 向右滑动：上一张
+                            goToPrevious()
+                        }
+                        // 不满足条件则无任何反应
+                    }
+            )
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showControls.toggle()
                 }
             }
             
+            // 底部控制栏（可隐藏）
             if showControls {
                 VStack {
                     Spacer()
@@ -177,7 +152,7 @@ struct PhotoDetailView: View {
         let asset = assets[index]
         let manager = PHImageManager.default()
         let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat     // 快速加载，邻居图用
+        options.deliveryMode = .fastFormat
         options.isSynchronous = false
         
         manager.requestImage(for: asset,
@@ -189,7 +164,7 @@ struct PhotoDetailView: View {
                     if isCurrent {
                         self.currentImage = image
                     }
-                    // 更新邻居缓存（以当前 currentIndex 为准，防止错位）
+                    // 更新邻居缓存（确保为当前 currentIndex 的正确邻居）
                     let count = self.assets.count
                     let nextIdx = (self.currentIndex + 1) % count
                     let prevIdx = (self.currentIndex - 1 + count) % count
@@ -209,56 +184,21 @@ struct PhotoDetailView: View {
         let count = assets.count
         let nextIdx = (currentIndex + 1) % count
         let prevIdx = (currentIndex - 1 + count) % count
-        // 邻居用超小尺寸快速预加载
         loadImage(at: nextIdx, targetSize: thumbSize, isCurrent: false)
         loadImage(at: prevIdx, targetSize: thumbSize, isCurrent: false)
     }
     
-    // MARK: - 手动滑动动画（已彻底修复闪烁）
-    private func slideToNext() {
-        guard !isAnimatingSlide else { return }
-        isAnimatingSlide = true
-        
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            dragOffset = -screenWidth
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            // 直接用已经预加载好的下一张小图替换当前图
-            if let next = nextImage {
-                currentImage = next
-            }
-            // 滑动完成后，下一张变成当前，重新加载它的高清大图
-            let newIndex = (currentIndex + 1) % assets.count
-            currentIndex = newIndex
-            dragOffset = 0
-            isAnimatingSlide = false
-            resetAutoPlayIfNeeded()
-            // 立刻重新加载当前的高清大图（因为上面只是用了小图）
-            loadImage(at: newIndex, targetSize: fullSize, isCurrent: true)
-        }
+    // MARK: - 手动翻页（无动画，直接切换）
+    private func goToNext() {
+        guard !assets.isEmpty else { return }
+        currentIndex = (currentIndex + 1) % assets.count
+        resetAutoPlayIfNeeded()
     }
     
-    private func slideToPrevious() {
-        guard !isAnimatingSlide else { return }
-        isAnimatingSlide = true
-        
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            dragOffset = screenWidth
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            if let prev = prevImage {
-                currentImage = prev
-            }
-            let newIndex = (currentIndex - 1 + assets.count) % assets.count
-            currentIndex = newIndex
-            dragOffset = 0
-            isAnimatingSlide = false
-            resetAutoPlayIfNeeded()
-            // 同样，替换为高清大图
-            loadImage(at: newIndex, targetSize: fullSize, isCurrent: true)
-        }
+    private func goToPrevious() {
+        guard !assets.isEmpty else { return }
+        currentIndex = (currentIndex - 1 + assets.count) % assets.count
+        resetAutoPlayIfNeeded()
     }
     
     // MARK: - 自动播放（无滑动特效）
