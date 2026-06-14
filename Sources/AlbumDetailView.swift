@@ -1,7 +1,7 @@
 import SwiftUI
 import Photos
 
-// 相册网格中的缩略图单元格
+// MARK: - 缩略图组件
 struct PhotoCell: View {
     let asset: PHAsset
     @State private var thumbnail: UIImage? = nil
@@ -19,9 +19,7 @@ struct PhotoCell: View {
         .frame(width: (UIScreen.main.bounds.width - 6) / 3,
                height: (UIScreen.main.bounds.width - 6) / 3)
         .clipped()
-        .onAppear {
-            loadThumbnail()
-        }
+        .onAppear { loadThumbnail() }
     }
     
     private func loadThumbnail() {
@@ -34,38 +32,32 @@ struct PhotoCell: View {
                              contentMode: .aspectFill,
                              options: options) { image, _ in
             if let image = image {
-                DispatchQueue.main.async {
-                    self.thumbnail = image
-                }
+                DispatchQueue.main.async { self.thumbnail = image }
             }
         }
     }
 }
 
-// 相册内页：网格 + 选择 + 播放
+// MARK: - 相册内页
 struct AlbumDetailView: View {
     let album: AlbumInfo
     let manager: AlbumManager
     @State private var assets: [PHAsset] = []
     
-    // 返回定位
     @State private var lastViewedID: String? = nil
     
-    // 选图模式
+    // 选择模式
     @State private var isSelecting = false
     @State private var selectedIndices: Set<Int> = []
     @State private var startIndex: Int? = nil
     
-    // 播放选中图片的导航
     @State private var showSelectedPlayback = false
     
     private let columns = [GridItem(.adaptive(minimum: 100), spacing: 2)]
     
     var body: some View {
         VStack(spacing: 0) {
-            if isSelecting {
-                selectionToolbar
-            }
+            if isSelecting { selectionToolbar }
             photoGrid
         }
         .navigationTitle(album.title)
@@ -82,15 +74,13 @@ struct AlbumDetailView: View {
         }
     }
     
-    // 选图模式底部工具栏
+    // MARK: - 选图工具栏
     private var selectionToolbar: some View {
         HStack {
             Text("已选 \(selectedIndices.count) 张")
             Spacer()
             Button("播放选中") {
-                if !selectedIndices.isEmpty {
-                    showSelectedPlayback = true
-                }
+                if !selectedIndices.isEmpty { showSelectedPlayback = true }
             }
             .disabled(selectedIndices.isEmpty)
             Button("取消选择") {
@@ -102,7 +92,7 @@ struct AlbumDetailView: View {
         .background(.ultraThinMaterial)
     }
     
-    // 图片网格 + 滚动定位
+    // MARK: - 网格视图
     private var photoGrid: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
@@ -124,17 +114,14 @@ struct AlbumDetailView: View {
         .overlay(selectedPlaybackLink)
     }
     
-    // 每个网格项
     @ViewBuilder
     private func gridCell(index: Int, asset: PHAsset) -> some View {
         ZStack {
             if isSelecting {
-                // 选图模式：点击处理选择，不可直接跳转
                 PhotoCell(asset: asset)
                     .overlay(selectionOverlay(index: index))
                     .onTapGesture { handleSelectionTap(index: index) }
             } else {
-                // 正常浏览：点击进入大图
                 NavigationLink(destination: PhotoDetailView(
                     assets: assets,
                     initialIndex: index,
@@ -146,7 +133,6 @@ struct AlbumDetailView: View {
         }
     }
     
-    // 选中图片的覆盖层（蓝色边框 + 勾）
     @ViewBuilder
     private func selectionOverlay(index: Int) -> some View {
         if selectedIndices.contains(index) {
@@ -164,7 +150,6 @@ struct AlbumDetailView: View {
         }
     }
     
-    // 隐藏的导航：用于播放选中的图片
     @ViewBuilder
     private var selectedPlaybackLink: some View {
         if let selected = selectedAssets() {
@@ -177,27 +162,34 @@ struct AlbumDetailView: View {
         }
     }
     
-    // MARK: - 选图逻辑
+    // MARK: - 选图逻辑（核心修改）
     private func handleSelectionTap(index: Int) {
         guard let start = startIndex else {
+            // 第一次点击：设置起点
             startIndex = index
             return
         }
         
+        // 有起点，形成范围 [start, index]（可能单点）
         let range = min(start, index)...max(start, index)
-        let indices = Set(range)
-        let startSelected = selectedIndices.contains(start)
-        let endSelected = selectedIndices.contains(index)
+        let indicesInRange = Set(range)
         
-        if startSelected && endSelected {
-            selectedIndices.subtract(indices)
-        } else if !startSelected && !endSelected {
-            selectedIndices.formUnion(indices)
+        if range.count == 1 {
+            // 单张图片：直接反转这一张的状态
+            if selectedIndices.contains(index) {
+                selectedIndices.remove(index)
+            } else {
+                selectedIndices.insert(index)
+            }
         } else {
-            let intersection = selectedIndices.intersection(indices)
-            selectedIndices.subtract(intersection)
-            selectedIndices.formUnion(indices.subtracting(intersection))
+            // 范围：对该范围内的所有索引统一反转
+            // 即：已选 → 未选，未选 → 已选
+            let currentlySelected = selectedIndices.intersection(indicesInRange)
+            selectedIndices.subtract(currentlySelected)                // 取消已选的
+            selectedIndices.formUnion(indicesInRange.subtracting(currentlySelected)) // 选中未选的
         }
+        
+        // 清除起点
         startIndex = nil
     }
     
