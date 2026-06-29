@@ -1,7 +1,7 @@
 import SwiftUI
 import Photos
 
-// MARK: - 缩略图组件
+// 缩略图组件
 struct PhotoCell: View {
     let asset: PHAsset
     @State private var thumbnail: UIImage? = nil
@@ -38,20 +38,24 @@ struct PhotoCell: View {
     }
 }
 
-// MARK: - 相册内页
+// 相册内页
 struct AlbumDetailView: View {
+    @EnvironmentObject var schemeStore: SchemeStore
     let album: AlbumInfo
     let manager: AlbumManager
     @State private var assets: [PHAsset] = []
     
     @State private var lastViewedID: String? = nil
     
-    // 选择模式
     @State private var isSelecting = false
     @State private var selectedIndices: Set<Int> = []
     @State private var startIndex: Int? = nil
     
     @State private var showSelectedPlayback = false
+    
+    // 保存方案相关
+    @State private var showSaveSchemeAlert = false
+    @State private var newSchemeName = ""
     
     private let columns = [GridItem(.adaptive(minimum: 100), spacing: 2)]
     
@@ -74,13 +78,16 @@ struct AlbumDetailView: View {
         }
     }
     
-    // MARK: - 选图工具栏
     private var selectionToolbar: some View {
         HStack {
             Text("已选 \(selectedIndices.count) 张")
             Spacer()
             Button("播放选中") {
                 if !selectedIndices.isEmpty { showSelectedPlayback = true }
+            }
+            .disabled(selectedIndices.isEmpty)
+            Button("保存方案") {
+                showSaveSchemeAlert = true
             }
             .disabled(selectedIndices.isEmpty)
             Button("取消选择") {
@@ -90,9 +97,17 @@ struct AlbumDetailView: View {
         }
         .padding()
         .background(.ultraThinMaterial)
+        .alert("保存方案", isPresented: $showSaveSchemeAlert) {
+            TextField("方案名称", text: $newSchemeName)
+            Button("保存") {
+                saveCurrentSelection()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("为当前选中的 \(selectedIndices.count) 张图片命名")
+        }
     }
     
-    // MARK: - 网格视图
     private var photoGrid: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
@@ -152,9 +167,10 @@ struct AlbumDetailView: View {
     
     @ViewBuilder
     private var selectedPlaybackLink: some View {
-        if let selected = selectedAssets() {
+        if !selectedIndices.isEmpty {
+            let selectedAssets = selectedIndices.sorted().map { assets[$0] }
             NavigationLink(
-                destination: PhotoDetailView(assets: selected, initialIndex: 0, lastViewedID: $lastViewedID),
+                destination: PhotoDetailView(assets: selectedAssets, initialIndex: 0, lastViewedID: $lastViewedID),
                 isActive: $showSelectedPlayback,
                 label: { EmptyView() }
             )
@@ -162,34 +178,24 @@ struct AlbumDetailView: View {
         }
     }
     
-    // MARK: - 选图逻辑（核心修改）
     private func handleSelectionTap(index: Int) {
         guard let start = startIndex else {
-            // 第一次点击：设置起点
             startIndex = index
             return
         }
-        
-        // 有起点，形成范围 [start, index]（可能单点）
         let range = min(start, index)...max(start, index)
         let indicesInRange = Set(range)
-        
         if range.count == 1 {
-            // 单张图片：直接反转这一张的状态
             if selectedIndices.contains(index) {
                 selectedIndices.remove(index)
             } else {
                 selectedIndices.insert(index)
             }
         } else {
-            // 范围：对该范围内的所有索引统一反转
-            // 即：已选 → 未选，未选 → 已选
             let currentlySelected = selectedIndices.intersection(indicesInRange)
-            selectedIndices.subtract(currentlySelected)                // 取消已选的
-            selectedIndices.formUnion(indicesInRange.subtracting(currentlySelected)) // 选中未选的
+            selectedIndices.subtract(currentlySelected)
+            selectedIndices.formUnion(indicesInRange.subtracting(currentlySelected))
         }
-        
-        // 清除起点
         startIndex = nil
     }
     
@@ -198,8 +204,10 @@ struct AlbumDetailView: View {
         startIndex = nil
     }
     
-    private func selectedAssets() -> [PHAsset]? {
-        guard !selectedIndices.isEmpty else { return nil }
-        return selectedIndices.sorted().map { assets[$0] }
+    private func saveCurrentSelection() {
+        let name = newSchemeName.isEmpty ? "方案 \(schemeStore.schemes.count + 1)" : newSchemeName
+        let ids = selectedIndices.sorted().map { assets[$0].localIdentifier }
+        schemeStore.addScheme(name: name, imageIDs: ids)
+        newSchemeName = ""
     }
 }
