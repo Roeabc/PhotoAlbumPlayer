@@ -6,17 +6,15 @@ struct SchemeDetailView: View {
     @State var scheme: ImageScheme
     var isNewMerge: Bool = false   // 是否刚从合并生成，默认未保存
     
-    @State private var assets: [PHAsset] = []
+    @State private var assets: [PHAsset] = []           // 正常浏览时的图片（方案内的）
+    @State private var allSourceAssets: [PHAsset] = []  // 编辑模式下来源相册的全部图片
     @State private var lastViewedID: String? = nil
     
-    // 选择编辑
     @State private var isEditingSelection = false
-    @State private var selectedIndices: Set<Int> = []
+    @State private var selectedIndices: Set<Int> = []   // 编辑模式下在 allSourceAssets 中的选中索引
     @State private var startIndex: Int? = nil
     
-    // 展示播放选中
     @State private var showSelectedPlayback = false
-    
     @State private var showSaveDialog = false
     @State private var newName: String = ""
     
@@ -40,8 +38,14 @@ struct SchemeDetailView: View {
                     }
                     Button(isEditingSelection ? "完成" : "编辑") {
                         isEditingSelection.toggle()
-                        if !isEditingSelection {
-                            // 退出编辑模式时重置选择状态
+                        if isEditingSelection {
+                            // 进入编辑模式：加载来源相册全部图片
+                            loadAllSourceAssets()
+                            // 初始化选中状态为当前方案图片的索引
+                            selectedIndices = Set(allSourceAssets.indices.filter { index in
+                                scheme.imageIDs.contains(allSourceAssets[index].localIdentifier)
+                            })
+                        } else {
                             startIndex = nil
                         }
                     }
@@ -63,14 +67,16 @@ struct SchemeDetailView: View {
             Text("为更改后的方案命名")
         }
         .onAppear {
+            // 正常浏览时加载方案内的图片
             assets = scheme.fetchAssets()
-            // 初始化选择状态为所有已存在图片（编辑模式时默认全选）
-            if isEditingSelection {
-                selectedIndices = Set(0..<assets.count)
-            }
         }
     }
     
+    private func loadAllSourceAssets() {
+        allSourceAssets = scheme.fetchAllAssetsFromSourceAlbums()
+    }
+    
+    // 编辑模式工具栏
     private var selectionToolbar: some View {
         HStack {
             Text("已选 \(selectedIndices.count) 张")
@@ -82,7 +88,7 @@ struct SchemeDetailView: View {
             }
             .disabled(selectedIndices.isEmpty)
             Button("全选") {
-                selectedIndices = Set(0..<assets.count)
+                selectedIndices = Set(0..<allSourceAssets.count)
             }
             Button("取消全选") {
                 selectedIndices = []
@@ -92,13 +98,27 @@ struct SchemeDetailView: View {
         .background(.ultraThinMaterial)
     }
     
+    // 网格
     private var photoGrid: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 2) {
-                    ForEach(Array(assets.enumerated()), id: \.element.localIdentifier) { index, asset in
-                        gridCell(index: index, asset: asset)
+                    if isEditingSelection {
+                        ForEach(Array(allSourceAssets.enumerated()), id: \.element.localIdentifier) { index, asset in
+                            gridCell(index: index, asset: asset)
+                                .id(asset.localIdentifier)
+                        }
+                    } else {
+                        ForEach(Array(assets.enumerated()), id: \.element.localIdentifier) { index, asset in
+                            NavigationLink(destination: PhotoDetailView(
+                                assets: assets,
+                                initialIndex: index,
+                                lastViewedID: $lastViewedID
+                            )) {
+                                PhotoCell(asset: asset)
+                            }
                             .id(asset.localIdentifier)
+                        }
                     }
                 }
                 .padding(.vertical, 2)
@@ -116,43 +136,35 @@ struct SchemeDetailView: View {
     @ViewBuilder
     private func gridCell(index: Int, asset: PHAsset) -> some View {
         ZStack {
-            if isEditingSelection {
-                PhotoCell(asset: asset)
-                    .overlay(selectionOverlay(index: index))
-                    .onTapGesture { handleSelectionTap(index: index) }
-            } else {
-                NavigationLink(destination: PhotoDetailView(
-                    assets: assets,
-                    initialIndex: index,
-                    lastViewedID: $lastViewedID
-                )) {
-                    PhotoCell(asset: asset)
-                }
-            }
+            PhotoCell(asset: asset)
+                .overlay(
+                    isEditingSelection && selectedIndices.contains(index) ?
+                    Rectangle().stroke(Color.blue, lineWidth: 3) : nil
+                )
+                .overlay(
+                    isEditingSelection && selectedIndices.contains(index) ?
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.blue)
+                                .padding(4)
+                        }
+                        Spacer()
+                    } : nil
+                )
         }
-    }
-    
-    @ViewBuilder
-    private func selectionOverlay(index: Int) -> some View {
-        if selectedIndices.contains(index) {
-            Rectangle()
-                .stroke(Color.blue, lineWidth: 3)
-            VStack {
-                HStack {
-                    Spacer()
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.blue)
-                        .padding(4)
-                }
-                Spacer()
+        .onTapGesture {
+            if isEditingSelection {
+                handleSelectionTap(index: index)
             }
         }
     }
     
     @ViewBuilder
     private var selectedPlaybackLink: some View {
-        if !selectedIndices.isEmpty {
-            let selectedAssets = selectedIndices.sorted().map { assets[$0] }
+        if isEditingSelection && !selectedIndices.isEmpty {
+            let selectedAssets = selectedIndices.sorted().map { allSourceAssets[$0] }
             NavigationLink(
                 destination: PhotoDetailView(assets: selectedAssets, initialIndex: 0, lastViewedID: $lastViewedID),
                 isActive: $showSelectedPlayback,
@@ -162,7 +174,7 @@ struct SchemeDetailView: View {
         }
     }
     
-    // 同相册选图逻辑：范围统一反转
+    // 选择逻辑：范围统一反转（同之前逻辑）
     private func handleSelectionTap(index: Int) {
         guard let start = startIndex else {
             startIndex = index
@@ -184,30 +196,25 @@ struct SchemeDetailView: View {
         startIndex = nil
     }
     
-    // 保存：另存或覆盖
+    // 保存
     private func saveAsNew() {
         let name = newName.isEmpty ? scheme.name + " 副本" : newName
-        let newIDs = selectedIndices.sorted().compactMap { index -> String? in
-            guard index < assets.count else { return nil }
-            return assets[index].localIdentifier
-        }
-        schemeStore.addScheme(name: name, imageIDs: newIDs)
+        let newIDs = selectedIndices.sorted().map { allSourceAssets[$0].localIdentifier }
+        // 另存为新方案，来源相册保持不变
+        schemeStore.addScheme(name: name, imageIDs: newIDs, sourceAlbumIDs: scheme.sourceAlbumIDs)
         newName = ""
     }
     
     private func saveChanges(overwrite: Bool) {
-        let newIDs = selectedIndices.sorted().compactMap { index -> String? in
-            guard index < assets.count else { return nil }
-            return assets[index].localIdentifier
-        }
+        let newIDs = selectedIndices.sorted().map { allSourceAssets[$0].localIdentifier }
         if overwrite {
             var updated = scheme
             updated.name = newName.isEmpty ? scheme.name : newName
             updated.imageIDs = newIDs
+            // 来源相册不变
             schemeStore.updateScheme(updated)
-            // 刷新当前界面
             scheme = updated
-            assets = updated.fetchAssets()
+            assets = updated.fetchAssets()  // 刷新浏览状态
         } else {
             saveAsNew()
         }
