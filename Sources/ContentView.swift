@@ -3,27 +3,38 @@ import Photos
 
 struct ContentView: View {
     @StateObject private var albumManager = AlbumManager()
+    @StateObject private var schemeStore = SchemeStore()  // 新增
     
     var body: some View {
         NavigationStack {
             Group {
                 if albumManager.authorizationStatus == .authorized ||
                    albumManager.authorizationStatus == .limited {
-                    albumListView
+                    List {
+                        // 收藏方案入口
+                        Section {
+                            NavigationLink(destination: SchemeListView()) {
+                                Label("收藏方案", systemImage: "folder.badge.plus")
+                            }
+                        }
+                        
+                        // 相册列表
+                        Section(header: Text("相册")) {
+                            ForEach(albumManager.albums) { album in
+                                NavigationLink(destination: AlbumDetailView(album: album, manager: albumManager)) {
+                                    AlbumRow(album: album)
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
                 } else {
                     requestAccessView
                 }
             }
             .navigationTitle("相册")
         }
-    }
-    
-    private var albumListView: some View {
-        List(albumManager.albums) { album in
-            NavigationLink(destination: AlbumDetailView(album: album, manager: albumManager)) {
-                AlbumRow(album: album)
-            }
-        }
+        .environmentObject(schemeStore)  // 注入全局
     }
     
     private var requestAccessView: some View {
@@ -67,9 +78,7 @@ struct AlbumRow: View {
                     .foregroundColor(.secondary)
             }
         }
-        .onAppear {
-            loadCover()
-        }
+        .onAppear { loadCover() }
     }
     
     private func loadCover() {
@@ -83,9 +92,7 @@ struct AlbumRow: View {
                              contentMode: .aspectFill,
                              options: options) { image, _ in
             if let image = image {
-                DispatchQueue.main.async {
-                    self.coverImage = image
-                }
+                DispatchQueue.main.async { self.coverImage = image }
             }
         }
     }
