@@ -4,22 +4,37 @@ import Photos
 struct ImageScheme: Codable, Identifiable {
     var id: UUID = UUID()
     var name: String
-    var imageIDs: [String]  // PHAsset.localIdentifier 列表
+    var imageIDs: [String]              // 选中的图片 ID
+    var sourceAlbumIDs: [String]        // 来源相册的 localIdentifier 列表（合并时可能多个）
     var creationDate: Date = Date()
     
-    // 获取该方案对应的 PHAsset 数组（需在获取权限后调用）
+    // 获取该方案对应的 PHAsset 数组（保持顺序）
     func fetchAssets() -> [PHAsset] {
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: imageIDs, options: nil)
         var assets: [PHAsset] = []
         fetchResult.enumerateObjects { asset, _, _ in
             assets.append(asset)
         }
-        // 按照 imageIDs 的顺序排序（fetchAssets 不保证顺序）
         var idToAsset: [String: PHAsset] = [:]
         for asset in assets {
             idToAsset[asset.localIdentifier] = asset
         }
         return imageIDs.compactMap { idToAsset[$0] }
+    }
+    
+    // 获取来源相册的全部图片（合并去重，按加入顺序排列）
+    func fetchAllAssetsFromSourceAlbums() -> [PHAsset] {
+        var allAssets: [PHAsset] = []
+        let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: sourceAlbumIDs, options: nil)
+        collections.enumerateObjects { collection, _, _ in
+            let fetched = PHAsset.fetchAssets(in: collection, options: nil)
+            fetched.enumerateObjects { asset, _, _ in
+                if !allAssets.contains(where: { $0.localIdentifier == asset.localIdentifier }) {
+                    allAssets.append(asset)
+                }
+            }
+        }
+        return allAssets
     }
 }
 
@@ -50,8 +65,8 @@ class SchemeStore: ObservableObject {
         }
     }
     
-    func addScheme(name: String, imageIDs: [String]) {
-        let scheme = ImageScheme(name: name, imageIDs: imageIDs)
+    func addScheme(name: String, imageIDs: [String], sourceAlbumIDs: [String]) {
+        let scheme = ImageScheme(name: name, imageIDs: imageIDs, sourceAlbumIDs: sourceAlbumIDs)
         schemes.append(scheme)
         save()
     }
@@ -70,11 +85,14 @@ class SchemeStore: ObservableObject {
     
     func mergeSchemes(_ selectedSchemes: [ImageScheme], name: String) -> ImageScheme {
         var allIDs: [String] = []
+        var allSourceIDs: [String] = []
         for scheme in selectedSchemes {
             allIDs.append(contentsOf: scheme.imageIDs)
+            allSourceIDs.append(contentsOf: scheme.sourceAlbumIDs)
         }
-        // 去重并保持顺序（这里简单去重，不保证原始顺序）
+        // 去重
         let uniqueIDs = Array(NSOrderedSet(array: allIDs)) as! [String]
-        return ImageScheme(name: name, imageIDs: uniqueIDs)
+        let uniqueSourceIDs = Array(NSOrderedSet(array: allSourceIDs)) as! [String]
+        return ImageScheme(name: name, imageIDs: uniqueIDs, sourceAlbumIDs: uniqueSourceIDs)
     }
 }
