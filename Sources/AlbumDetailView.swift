@@ -207,7 +207,7 @@ struct AlbumDetailView: View {
     private func saveCurrentSelection() {
         let name = newSchemeName.isEmpty ? "方案 \(schemeStore.schemes.count + 1)" : newSchemeName
         let ids = selectedIndices.sorted().map { assets[$0].localIdentifier }
-        schemeStore.addScheme(name: name, imageIDs: ids)
+        // 记录来源相册ID（当前相册）
+        schemeStore.addScheme(name: name, imageIDs: ids, sourceAlbumIDs: [album.id])
         newSchemeName = ""
     }
-}
