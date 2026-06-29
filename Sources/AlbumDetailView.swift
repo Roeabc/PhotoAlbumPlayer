@@ -78,6 +78,7 @@ struct AlbumDetailView: View {
         }
     }
     
+    // MARK: - 工具栏
     private var selectionToolbar: some View {
         HStack {
             Text("已选 \(selectedIndices.count) 张")
@@ -108,6 +109,7 @@ struct AlbumDetailView: View {
         }
     }
     
+    // MARK: - 网格
     private var photoGrid: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
@@ -178,6 +180,7 @@ struct AlbumDetailView: View {
         }
     }
     
+    // MARK: - 选图逻辑
     private func handleSelectionTap(index: Int) {
         guard let start = startIndex else {
             startIndex = index
@@ -204,10 +207,11 @@ struct AlbumDetailView: View {
         startIndex = nil
     }
     
+    // MARK: - 保存方案
     private func saveCurrentSelection() {
         let name = newSchemeName.isEmpty ? "方案 \(schemeStore.schemes.count + 1)" : newSchemeName
         let ids = selectedIndices.sorted().map { assets[$0].localIdentifier }
-        // 记录来源相册ID（当前相册）
         schemeStore.addScheme(name: name, imageIDs: ids, sourceAlbumIDs: [album.id])
         newSchemeName = ""
     }
+}
